@@ -4,11 +4,11 @@ import numpy as np
 from scipy import stats
 
 # LlamaIndex imports
-from llama_index.tools import FunctionTool  # Custom tool wrapper citeturn0view0
-from llama_index.llms.ollama import Ollama  # Ollama LLM client citeturn0view0
-from llama_index.core.agent.workflow import ReActAgent  # ReAct agent implementation citeturn0view0
+from llama_index.tools import FunctionTool  # FunctionTool wrapper for Python functions
+from llama_index.llms.ollama import Ollama     # Ollama LLM client
+from llama_index.core.agent.workflow import ReActAgent  # ReAct agent implementation
 
-# 1. Define statistical functions and wrap as FunctionTool
+# 1. Define statistical functions and wrap them as tools
 
 def pearson(x: List[float], y: List[float]) -> float:
     """Compute Pearson correlation coefficient between two numeric lists."""
@@ -16,7 +16,7 @@ def pearson(x: List[float], y: List[float]) -> float:
 pearson_tool = FunctionTool.from_defaults(fn=pearson)
 
 def z_test(sample: List[float], population: List[float]) -> float:
-    """Compute z-test statistic between a sample list and a population list."""
+    """Compute z-test statistic between a sample and a population."""
     return (np.mean(sample) - np.mean(population)) / (np.std(population) / np.sqrt(len(sample)))
 z_test_tool = FunctionTool.from_defaults(fn=z_test)
 
@@ -52,13 +52,19 @@ def linear_regression(x: List[float], y: List[float]) -> Dict[str, float]:
     return {"slope": slope, "intercept": intercept}
 linreg_tool = FunctionTool.from_defaults(fn=linear_regression)
 
-# Aggregate tools
+# Aggregate all tools
 tools = [
-    pearson_tool, z_test_tool, anova_tool, contribution_tool,
-    t_test_tool, chi_square_tool, mwu_tool, linreg_tool
+    pearson_tool,
+    z_test_tool,
+    anova_tool,
+    contribution_tool,
+    t_test_tool,
+    chi_square_tool,
+    mwu_tool,
+    linreg_tool,
 ]
 
-# 2. Define the causal analysis agent class
+# 2. Causal Analysis Agent
 class CausalAnalysisAgent:
     def __init__(
         self,
@@ -70,7 +76,7 @@ class CausalAnalysisAgent:
         self.primary_llm = Ollama(model=primary_model, request_timeout=request_timeout)
         self.validation_llm = Ollama(model=validation_model, request_timeout=request_timeout)
 
-        # Setup ReAct agent for hypothesis validation
+        # Setup ReAct agent for validation
         self.validation_agent = ReActAgent(tools=tools, llm=self.validation_llm)
 
         # Prompt templates
@@ -82,7 +88,7 @@ You are a data analyst. Given these reports:\n{reports}\nand this data summary:\
             ),
             "frameworks": (
                 """
-As a framework advisor, review these reports and analysis:\n{reports}\nAnalysis:\n{analysis}\nThink step by step and list appropriate frameworks separated by semicolons.
+As a framework advisor, review these reports and analysis:\n{reports}\nAnalysis:\n{analysis}\nThink step by step and list frameworks separated by semicolons.
 """
             ),
             "hypotheses": (
@@ -99,48 +105,55 @@ Given these validation results:\n{validations}\nThink step by step and provide g
                 """
 Based on insights:\n{insights}\nand schema:\n{schema}\nThink step by step and generate actionable recommendations; prefix database actions with 'Database:'.
 """
-            )
+            ),
         }
 
     def run(self, reports: List[str], data: Dict[str, Any], schema: str) -> Dict[str, Any]:
         # 1. Analysis
         rpt = "\n\n".join(reports)
         data_str = str(data)
-        analysis = self.primary_llm.complete(self.prompts["analysis"].format(reports=rpt, data=data_str))
+        analysis_resp = self.primary_llm.complete(
+            self.prompts["analysis"].format(reports=rpt, data=data_str)
+        )
+        analysis = analysis_resp.text
 
         # 2. Framework selection
-        frameworks = self.primary_llm.complete(
+        frameworks_resp = self.primary_llm.complete(
             self.prompts["frameworks"].format(reports=rpt, analysis=analysis)
         )
+        frameworks = frameworks_resp.text
 
         # 3. Hypotheses
-        hyps = self.primary_llm.complete(
+        hyps_resp = self.primary_llm.complete(
             self.prompts["hypotheses"].format(analysis=analysis)
         )
-        hypotheses = [h.strip() for h in hyps.split(';') if h.strip()]
+        hyps_text = hyps_resp.text
+        hypotheses = [h.strip() for h in hyps_text.split(';') if h.strip()]
 
         # 4. Validation via ReActAgent
         validations = []
         for hyp in hypotheses:
-            result = self.validation_agent.run(f"Validate hypothesis: {hyp} using data: {data_str}")
-            validations.append(str(result))
+            val = self.validation_agent.run(f"Validate hypothesis: {hyp} using data: {data_str}")
+            validations.append(str(val))
 
         # 5. Insights
-        insights = self.validation_llm.complete(
+        insights_resp = self.validation_llm.complete(
             self.prompts["insights"].format(validations="\n".join(validations))
         )
-        insights_list = [i.strip() for i in insights.split(';') if i.strip()]
+        insights_text = insights_resp.text
+        insights = [i.strip() for i in insights_text.split(';') if i.strip()]
 
         # 6. Recommendations
-        recs = self.primary_llm.complete(
-            self.prompts["recommendations"].format(insights=insights, schema=schema)
+        recs_resp = self.primary_llm.complete(
+            self.prompts["recommendations"].format(insights=insights_text, schema=schema)
         )
-        recommendations = [r.strip() for r in recs.split(';') if r.strip()]
+        recs_text = recs_resp.text
+        recommendations = [r.strip() for r in recs_text.split(';') if r.strip()]
 
         return {
             "frameworks": frameworks,
             "root_causes": validations,
-            "insights": insights_list,
+            "insights": insights,
             "recommendations": recommendations
         }
 
