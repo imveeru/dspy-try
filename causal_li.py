@@ -4,52 +4,61 @@ import numpy as np
 from scipy import stats
 
 # LlamaIndex imports
-from llama_index.tools import FunctionTool  # Function tool wrapper
-from llama_index.llms.ollama import Ollama     # Ollama LLM client
-from llama_index.core.agent.workflow import ReActAgent  # ReAct agent implementation
+from llama_index.tools import FunctionTool        # Function tool wrapper ([llamaindexxx.readthedocs.io](https://llamaindexxx.readthedocs.io/en/latest/examples/agent/react_agent.html?utm_source=chatgpt.com))
+from llama_index.llms.ollama import Ollama            # Ollama LLM client ([llamaindexxx.readthedocs.io](https://llamaindexxx.readthedocs.io/en/latest/examples/agent/react_agent.html?utm_source=chatgpt.com))
+from llama_index.agent import ReActAgent               # ReAct agent implementation ([llamaindexxx.readthedocs.io](https://llamaindexxx.readthedocs.io/en/latest/examples/agent/react_agent.html?utm_source=chatgpt.com))
 
 # 1. Define statistical functions and wrap them as FunctionTools
 
 def pearson(x: List[float], y: List[float]) -> float:
+    """Compute Pearson correlation coefficient."""
     return stats.pearsonr(x, y)[0]
 pearson_tool = FunctionTool.from_defaults(fn=pearson)
 
 def z_test(sample: List[float], population: List[float]) -> float:
+    """Compute z-test statistic between sample and population."""
     return (np.mean(sample) - np.mean(population)) / (np.std(population) / np.sqrt(len(sample)))
 z_test_tool = FunctionTool.from_defaults(fn=z_test)
 
 def anova(groups: List[List[float]]) -> float:
+    """Perform one-way ANOVA, returning F-statistic."""
     return stats.f_oneway(*groups)[0]
 anova_tool = FunctionTool.from_defaults(fn=anova)
 
 def contribution(x: List[float], y: List[float]) -> float:
+    """Compute covariance(x,y)/variance(y)."""
     cov = np.cov(x, y)[0,1]
     return cov / np.var(y)
 contribution_tool = FunctionTool.from_defaults(fn=contribution)
 
 def t_test(a: List[float], b: List[float]) -> float:
+    """Compute two-sample t-test statistic."""
     return stats.ttest_ind(a, b, equal_var=False).statistic
 t_test_tool = FunctionTool.from_defaults(fn=t_test)
 
 def chi_square(observed: List[float], expected: List[float]) -> float:
+    """Compute chi-square statistic for observed vs expected."""
     return float(stats.chisquare(observed, expected).statistic)
 chi_square_tool = FunctionTool.from_defaults(fn=chi_square)
 
 def mannwhitneyu(a: List[float], b: List[float]) -> float:
+    """Compute Mann-Whitney U statistic."""
     return float(stats.mannwhitneyu(a, b, alternative='two-sided').statistic)
 mwu_tool = FunctionTool.from_defaults(fn=mannwhitneyu)
 
 def linear_regression(x: List[float], y: List[float]) -> Dict[str, float]:
+    """Compute linear regression slope and intercept."""
     slope, intercept, _, _, _ = stats.linregress(x, y)
     return {"slope": slope, "intercept": intercept}
 linreg_tool = FunctionTool.from_defaults(fn=linear_regression)
 
-# All tools
+# Aggregate all tools
 tools = [
     pearson_tool, z_test_tool, anova_tool, contribution_tool,
     t_test_tool, chi_square_tool, mwu_tool, linreg_tool
 ]
 
+# 2. Define the causal analysis agent
 class CausalAnalysisAgent:
     def __init__(
         self,
@@ -57,21 +66,25 @@ class CausalAnalysisAgent:
         validation_model: str = "deepseek",
         request_timeout: float = 120.0
     ):
-        # Initialize LLMs
+        # Initialize Ollama LLMs
         self.primary_llm = Ollama(model=primary_model, request_timeout=request_timeout)
         self.validation_llm = Ollama(model=validation_model, request_timeout=request_timeout)
-        # Setup ReAct agent for validation
-        self.validation_agent = ReActAgent.from_tools(tools=tools, llm=self.validation_llm)
-        # Prompts
+        # Configure ReAct agent for hypothesis validation
+        self.validation_agent = ReActAgent.from_tools(
+            tools=tools,
+            llm=self.validation_llm,
+            verbose=True
+        )
+        # Prompt templates
         self.prompts = {
             "analysis": (
                 """
-You are a data analyst. Given these reports:\n{reports}\nand this data summary:\n{data}\nThink step by step and provide a concise analysis.
+You are a data analyst. Given these reports:\n{reports}\nand data summary:\n{data}\nThink step by step and provide a concise analysis.
 """
             ),
             "frameworks": (
                 """
-As a framework advisor, review these reports and analysis:\n{reports}\nAnalysis:\n{analysis}\nThink step by step and list frameworks separated by semicolons.
+As a framework advisor, review reports and analysis:\n{reports}\nAnalysis:\n{analysis}\nThink step by step and list frameworks separated by semicolons.
 """
             ),
             "hypotheses": (
@@ -88,46 +101,45 @@ Given these validation results:\n{validations}\nThink step by step and provide g
                 """
 Based on insights:\n{insights}\nand schema:\n{schema}\nThink step by step and generate actionable recommendations; prefix database actions with 'Database:'.
 """
-            ),
+            )
         }
 
     def run(self, reports: List[str], data: Dict[str, Any], schema: str) -> Dict[str, Any]:
         rpt = "\n\n".join(reports)
         data_str = str(data)
         # 1. Analysis
-        analysis_resp = self.primary_llm.complete(
+        resp1 = self.primary_llm.complete(
             self.prompts["analysis"].format(reports=rpt, data=data_str)
         )
-        analysis = analysis_resp.text
+        analysis = resp1.text
         # 2. Frameworks
-        fw_resp = self.primary_llm.complete(
+        resp2 = self.primary_llm.complete(
             self.prompts["frameworks"].format(reports=rpt, analysis=analysis)
         )
-        frameworks = fw_resp.text
+        frameworks = resp2.text
         # 3. Hypotheses
-        hyp_resp = self.primary_llm.complete(
+        resp3 = self.primary_llm.complete(
             self.prompts["hypotheses"].format(analysis=analysis)
         )
-        hyps = hyp_resp.text
+        hyps = resp3.text
         hypotheses = [h.strip() for h in hyps.split(';') if h.strip()]
-        # 4. Validation via streaming
+        # 4. Validation via chat()
         validations = []
         for hyp in hypotheses:
-            stream = self.validation_agent.stream_chat(message=f"Validate hypothesis: {hyp} using data: {data_str}")
-            val = ''.join([chunk.message.content for chunk in stream.chat_stream])
-            validations.append(val)
+            chat_resp = self.validation_agent.chat(
+                message=f"Validate hypothesis: {hyp} using data: {data_str}"
+            )
+            validations.append(chat_resp.response)
         # 5. Insights
-        ins_stream = self.validation_agent.stream_chat(
+        resp5 = self.validation_agent.chat(
             message=self.prompts["insights"].format(validations="\n".join(validations))
         )
-        insights_text = ''.join([chunk.message.content for chunk in ins_stream.chat_stream])
-        insights = [i.strip() for i in insights_text.split(';') if i.strip()]
+        insights = [i.strip() for i in resp5.response.split(';') if i.strip()]
         # 6. Recommendations
-        rec_resp = self.primary_llm.complete(
-            self.prompts["recommendations"].format(insights=insights_text, schema=schema)
+        resp6 = self.primary_llm.complete(
+            self.prompts["recommendations"].format(insights=resp5.response, schema=schema)
         )
-        recs = rec_resp.text
-        recommendations = [r.strip() for r in recs.split(';') if r.strip()]
+        recommendations = [r.strip() for r in resp6.text.split(';') if r.strip()]
         return {
             "frameworks": frameworks,
             "root_causes": validations,
