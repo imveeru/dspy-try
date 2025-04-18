@@ -4,67 +4,52 @@ import numpy as np
 from scipy import stats
 
 # LlamaIndex imports
-from llama_index.tools import FunctionTool  # Custom tool wrapper
+from llama_index.tools import FunctionTool  # Function tool wrapper
 from llama_index.llms.ollama import Ollama     # Ollama LLM client
 from llama_index.core.agent.workflow import ReActAgent  # ReAct agent implementation
 
-# 1. Define statistical functions and wrap them as tools
+# 1. Define statistical functions and wrap them as FunctionTools
 
 def pearson(x: List[float], y: List[float]) -> float:
-    """Compute Pearson correlation coefficient between two numeric lists."""
     return stats.pearsonr(x, y)[0]
 pearson_tool = FunctionTool.from_defaults(fn=pearson)
 
 def z_test(sample: List[float], population: List[float]) -> float:
-    """Compute z-test statistic between a sample and a population."""
     return (np.mean(sample) - np.mean(population)) / (np.std(population) / np.sqrt(len(sample)))
 z_test_tool = FunctionTool.from_defaults(fn=z_test)
 
 def anova(groups: List[List[float]]) -> float:
-    """Perform one-way ANOVA, returning the F-statistic."""
     return stats.f_oneway(*groups)[0]
 anova_tool = FunctionTool.from_defaults(fn=anova)
 
 def contribution(x: List[float], y: List[float]) -> float:
-    """Compute covariance(x,y)/variance(y) contribution metric."""
     cov = np.cov(x, y)[0,1]
     return cov / np.var(y)
 contribution_tool = FunctionTool.from_defaults(fn=contribution)
 
 def t_test(a: List[float], b: List[float]) -> float:
-    """Compute two-sample t-test statistic (unequal variance)."""
     return stats.ttest_ind(a, b, equal_var=False).statistic
 t_test_tool = FunctionTool.from_defaults(fn=t_test)
 
 def chi_square(observed: List[float], expected: List[float]) -> float:
-    """Compute chi-square test statistic for observed vs expected counts."""
     return float(stats.chisquare(observed, expected).statistic)
 chi_square_tool = FunctionTool.from_defaults(fn=chi_square)
 
 def mannwhitneyu(a: List[float], b: List[float]) -> float:
-    """Compute Mann-Whitney U test statistic (two-sided)."""
     return float(stats.mannwhitneyu(a, b, alternative='two-sided').statistic)
 mwu_tool = FunctionTool.from_defaults(fn=mannwhitneyu)
 
 def linear_regression(x: List[float], y: List[float]) -> Dict[str, float]:
-    """Compute linear regression slope and intercept."""
     slope, intercept, _, _, _ = stats.linregress(x, y)
     return {"slope": slope, "intercept": intercept}
 linreg_tool = FunctionTool.from_defaults(fn=linear_regression)
 
-# Aggregate all tools
+# All tools
 tools = [
-    pearson_tool,
-    z_test_tool,
-    anova_tool,
-    contribution_tool,
-    t_test_tool,
-    chi_square_tool,
-    mwu_tool,
-    linreg_tool,
+    pearson_tool, z_test_tool, anova_tool, contribution_tool,
+    t_test_tool, chi_square_tool, mwu_tool, linreg_tool
 ]
 
-# 2. Causal Analysis Agent
 class CausalAnalysisAgent:
     def __init__(
         self,
@@ -76,8 +61,8 @@ class CausalAnalysisAgent:
         self.primary_llm = Ollama(model=primary_model, request_timeout=request_timeout)
         self.validation_llm = Ollama(model=validation_model, request_timeout=request_timeout)
         # Setup ReAct agent for validation
-        self.validation_agent = ReActAgent(tools=tools, llm=self.validation_llm)
-        # Prompt templates
+        self.validation_agent = ReActAgent.from_tools(tools=tools, llm=self.validation_llm)
+        # Prompts
         self.prompts = {
             "analysis": (
                 """
@@ -107,48 +92,42 @@ Based on insights:\n{insights}\nand schema:\n{schema}\nThink step by step and ge
         }
 
     def run(self, reports: List[str], data: Dict[str, Any], schema: str) -> Dict[str, Any]:
-        # 1. Analysis
         rpt = "\n\n".join(reports)
         data_str = str(data)
+        # 1. Analysis
         analysis_resp = self.primary_llm.complete(
             self.prompts["analysis"].format(reports=rpt, data=data_str)
         )
         analysis = analysis_resp.text
-
-        # 2. Framework selection
-        frameworks_resp = self.primary_llm.complete(
+        # 2. Frameworks
+        fw_resp = self.primary_llm.complete(
             self.prompts["frameworks"].format(reports=rpt, analysis=analysis)
         )
-        frameworks = frameworks_resp.text
-
+        frameworks = fw_resp.text
         # 3. Hypotheses
-        hyps_resp = self.primary_llm.complete(
+        hyp_resp = self.primary_llm.complete(
             self.prompts["hypotheses"].format(analysis=analysis)
         )
-        hyps_text = hyps_resp.text
-        hypotheses = [h.strip() for h in hyps_text.split(';') if h.strip()]
-
-        # 4. Validation via ReActAgent
+        hyps = hyp_resp.text
+        hypotheses = [h.strip() for h in hyps.split(';') if h.strip()]
+        # 4. Validation via streaming
         validations = []
         for hyp in hypotheses:
-            # synchronous call
-            val_resp = self.validation_agent.run(f"Validate hypothesis: {hyp} using data: {data_str}")
-            validations.append(val_resp)
-
+            stream = self.validation_agent.stream_chat(message=f"Validate hypothesis: {hyp} using data: {data_str}")
+            val = ''.join([chunk.message.content for chunk in stream.chat_stream])
+            validations.append(val)
         # 5. Insights
-        insights_resp = self.primary_llm.complete(
-            self.prompts["insights"].format(validations="\n".join(validations))
+        ins_stream = self.validation_agent.stream_chat(
+            message=self.prompts["insights"].format(validations="\n".join(validations))
         )
-        insights_text = insights_resp.text
+        insights_text = ''.join([chunk.message.content for chunk in ins_stream.chat_stream])
         insights = [i.strip() for i in insights_text.split(';') if i.strip()]
-
         # 6. Recommendations
-        recs_resp = self.primary_llm.complete(
+        rec_resp = self.primary_llm.complete(
             self.prompts["recommendations"].format(insights=insights_text, schema=schema)
         )
-        recs_text = recs_resp.text
-        recommendations = [r.strip() for r in recs_text.split(';') if r.strip()]
-
+        recs = rec_resp.text
+        recommendations = [r.strip() for r in recs.split(';') if r.strip()]
         return {
             "frameworks": frameworks,
             "root_causes": validations,
@@ -197,4 +176,3 @@ if __name__ == "__main__":
 
 # Requirements:
 # pip install llama-index-llms-ollama scipy numpy
-# Ensure Ollama is running: `ollama serve`
