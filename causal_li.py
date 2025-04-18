@@ -2,9 +2,10 @@
 from typing import List, Dict, Any
 import numpy as np
 from scipy import stats
+import asyncio
 
 # LlamaIndex imports
-from llama_index.tools import FunctionTool  # FunctionTool wrapper for Python functions
+from llama_index.tools import FunctionTool  # Custom tool wrapper
 from llama_index.llms.ollama import Ollama     # Ollama LLM client
 from llama_index.core.agent.workflow import ReActAgent  # ReAct agent implementation
 
@@ -75,10 +76,8 @@ class CausalAnalysisAgent:
         # Initialize LLMs
         self.primary_llm = Ollama(model=primary_model, request_timeout=request_timeout)
         self.validation_llm = Ollama(model=validation_model, request_timeout=request_timeout)
-
         # Setup ReAct agent for validation
         self.validation_agent = ReActAgent(tools=tools, llm=self.validation_llm)
-
         # Prompt templates
         self.prompts = {
             "analysis": (
@@ -130,17 +129,24 @@ Based on insights:\n{insights}\nand schema:\n{schema}\nThink step by step and ge
         hyps_text = hyps_resp.text
         hypotheses = [h.strip() for h in hyps_text.split(';') if h.strip()]
 
-        # 4. Validation via ReActAgent
+        # 4. Validation via ReActAgent (async-handled)
         validations = []
         for hyp in hypotheses:
-            val = self.validation_agent.run(f"Validate hypothesis: {hyp} using data: {data_str}")
-            validations.append(str(val))
+            # Use asyncio.run to execute arun
+            val_resp = asyncio.run(
+                self.validation_agent.arun(f"Validate hypothesis: {hyp} using data: {data_str}")
+            )
+            validations.append(val_resp.text)
 
         # 5. Insights
-        insights_resp = self.validation_llm.complete(
-            self.prompts["insights"].format(validations="\n".join(validations))
+        insights_resp = asyncio.run(
+            self.validation_agent.arun(
+                self.prompts["insights"].format(validations="\n".join(validations))
+            ) if hasattr(self.validation_agent, 'arun') else self.validation_llm.complete(
+                self.prompts["insights"].format(validations="\n".join(validations))
+            )
         )
-        insights_text = insights_resp.text
+        insights_text = insights_resp.text if hasattr(insights_resp, 'text') else insights_resp
         insights = [i.strip() for i in insights_text.split(';') if i.strip()]
 
         # 6. Recommendations
