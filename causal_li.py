@@ -2,8 +2,8 @@
 from typing import List, Dict, Any
 from scipy import stats
 import numpy as np
-from llama_index.llms import Ollama
-from llama_index import LLMPredictor
+# Updated imports for Ollama per LlamaIndex docs\#from llama_index.llms.ollama import Ollama - corrected below
+from llama_index.llms.ollama import Ollama
 from llama_index.tools import BaseTool, ToolMetadata
 from llama_index.agent import Agent
 
@@ -111,24 +111,19 @@ class CausalAnalysisAgent:
         self,
         primary_model: str = "llama3.1:latest",
         validation_model: str = "deepseek",
-        api_base: str = "http://localhost:11434",
-        api_key: str = ""
+        request_timeout: float = 120.0
     ):
-        # 2. LLM Predictors
-        self.primary_predictor = LLMPredictor(
-            llm=Ollama(model=primary_model, api_base=api_base, api_key=api_key, temperature=0)
-        )
-        self.validation_predictor = LLMPredictor(
-            llm=Ollama(model=validation_model, api_base=api_base, api_key=api_key, temperature=0)
-        )
+        # 2. LLMs using updated Ollama init
+        self.primary_llm = Ollama(model=primary_model, request_timeout=request_timeout)
+        self.validation_llm = Ollama(model=validation_model, request_timeout=request_timeout)
 
-        # 3. Register tools with LlamaIndex Agent
+        # 3. Register tools with LlamaIndex Agent using llm param
         self.agent = Agent.from_tools(
             tools=[
                 PearsonTool(), ZTestTool(), ANOVATool(), ContributionTool(),
                 TTestTool(), ChiSquareTool(), MannWhitneyUTool(), LinearRegressionTool()
             ],
-            llm_predictor=self.validation_predictor,
+            llm=self.validation_llm,
             verbose=True
         )
 
@@ -165,33 +160,32 @@ Based on insights:\n{insights}\nand this schema:\n{schema}\nThink step by step a
         reports_str = "\n\n".join(reports)
         data_str = str(data)
         # 1. Input analysis
-        analysis = self.primary_predictor.predict(
+        analysis = self.primary_llm.complete(
             self.prompts["input_analysis"].format(reports=reports_str, data_stats=data_str)
         )
         # 2. Framework selection
-        frameworks = self.primary_predictor.predict(
+        frameworks = self.primary_llm.complete(
             self.prompts["frameworks"].format(reports=reports_str, input_analysis=analysis)
         )
         # 3. Hypotheses
-        hyps_text = self.primary_predictor.predict(
+        hyps_text = self.primary_llm.complete(
             self.prompts["hypotheses"].format(input_analysis=analysis)
         )
         hypotheses = [h.strip() for h in hyps_text.split(';') if h.strip()]
         # 4. Validate via agent and tools
         validations = []
         for hyp in hypotheses:
-            # Agent invokes the matching custom tool automatically via tool metadata
             result = self.agent.invoke(
-                input=f"Validate hypothesis: {hyp}\nUsing data: {data_str}"
+                f"Validate hypothesis: {hyp}\nUsing data: {data_str}"
             )
             validations.append(result)
         # 5. Insights generation
-        insights_text = self.validation_predictor.predict(
+        insights_text = self.validation_llm.complete(
             self.prompts["insights"].format(validations="\n".join(validations))
         )
         insights = [i.strip() for i in insights_text.split(';') if i.strip()]
         # 6. Recommendations
-        recs_text = self.primary_predictor.predict(
+        recs_text = self.primary_llm.complete(
             self.prompts["recommendations"].format(insights="; ".join(insights), schema=schema)
         )
         recommendations = [r.strip() for r in recs_text.split(';') if r.strip()]
@@ -243,5 +237,5 @@ if __name__ == "__main__":
     print(agent.format_report(result, sample_schema))
 
 # Dependencies:
-# pip install llama-index scipy numpy
-# Run Ollama service: `ollama serve`
+# pip install llama-index-llms-ollama scipy numpy
+# Ensure Ollama service is running locally (`ollama serve`)
