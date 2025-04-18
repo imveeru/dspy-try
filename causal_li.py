@@ -2,7 +2,6 @@
 from typing import List, Dict, Any
 import numpy as np
 from scipy import stats
-import asyncio
 
 # LlamaIndex imports
 from llama_index.tools import FunctionTool  # Custom tool wrapper
@@ -129,24 +128,18 @@ Based on insights:\n{insights}\nand schema:\n{schema}\nThink step by step and ge
         hyps_text = hyps_resp.text
         hypotheses = [h.strip() for h in hyps_text.split(';') if h.strip()]
 
-        # 4. Validation via ReActAgent (async-handled)
+        # 4. Validation via ReActAgent
         validations = []
         for hyp in hypotheses:
-            # Use asyncio.run to execute arun
-            val_resp = asyncio.run(
-                self.validation_agent.arun(f"Validate hypothesis: {hyp} using data: {data_str}")
-            )
-            validations.append(val_resp.text)
+            # synchronous call
+            val_resp = self.validation_agent.run(f"Validate hypothesis: {hyp} using data: {data_str}")
+            validations.append(val_resp)
 
         # 5. Insights
-        insights_resp = asyncio.run(
-            self.validation_agent.arun(
-                self.prompts["insights"].format(validations="\n".join(validations))
-            ) if hasattr(self.validation_agent, 'arun') else self.validation_llm.complete(
-                self.prompts["insights"].format(validations="\n".join(validations))
-            )
+        insights_resp = self.primary_llm.complete(
+            self.prompts["insights"].format(validations="\n".join(validations))
         )
-        insights_text = insights_resp.text if hasattr(insights_resp, 'text') else insights_resp
+        insights_text = insights_resp.text
         insights = [i.strip() for i in insights_text.split(';') if i.strip()]
 
         # 6. Recommendations
