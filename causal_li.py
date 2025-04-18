@@ -2,12 +2,14 @@
 from typing import List, Dict, Any
 from scipy import stats
 import numpy as np
-# Updated imports for Ollama per LlamaIndex docs\#from llama_index.llms.ollama import Ollama - corrected below
-from llama_index.llms.ollama import Ollama
-from llama_index.tools import BaseTool, ToolMetadata
-from llama_index.agent import Agent
 
-# 1. Define custom statistical tools as BaseTool subclasses
+# LlamaIndex imports
+from llama_index.llms.ollama import Ollama  # Ollama LLM client
+from llama_index.core.tools import BaseTool, ToolMetadata  # Custom tool base classes
+from llama_index.core.agent.workflow import ReActAgent  # ReAct agent implementation
+from llama_index.core.workflow import Context  # Agent execution context
+
+# 1. Define custom statistical tools
 class PearsonTool(BaseTool):
     def __init__(self):
         metadata = ToolMetadata(
@@ -24,7 +26,7 @@ class ZTestTool(BaseTool):
     def __init__(self):
         metadata = ToolMetadata(
             name="z_test",
-            description="Compute the z-test statistic between a sample list and a population list."
+            description="Compute z-test statistic between sample and population."
         )
         super().__init__(metadata=metadata)
     def _run(self, sample: List[float], population: List[float]) -> float:
@@ -36,7 +38,7 @@ class ANOVATool(BaseTool):
     def __init__(self):
         metadata = ToolMetadata(
             name="anova",
-            description="Perform one-way ANOVA returning the F-statistic."
+            description="Perform one-way ANOVA, returning the F-statistic."
         )
         super().__init__(metadata=metadata)
     def _run(self, groups: List[List[float]]) -> float:
@@ -48,7 +50,7 @@ class ContributionTool(BaseTool):
     def __init__(self):
         metadata = ToolMetadata(
             name="contribution",
-            description="Compute contribution analysis as covariance(x,y)/variance(y)."
+            description="Compute covariance(x,y)/variance(y) contribution metric."
         )
         super().__init__(metadata=metadata)
     def _run(self, x: List[float], y: List[float]) -> float:
@@ -97,7 +99,7 @@ class LinearRegressionTool(BaseTool):
     def __init__(self):
         metadata = ToolMetadata(
             name="linear_regression",
-            description="Compute linear regression slope and intercept between two numeric lists."
+            description="Compute linear regression slope and intercept."
         )
         super().__init__(metadata=metadata)
     def _run(self, x: List[float], y: List[float]) -> Dict[str, float]:
@@ -106,6 +108,7 @@ class LinearRegressionTool(BaseTool):
     async def _arun(self, *args, **kwargs):
         raise NotImplementedError
 
+# 2. Agent class
 class CausalAnalysisAgent:
     def __init__(
         self,
@@ -113,35 +116,35 @@ class CausalAnalysisAgent:
         validation_model: str = "deepseek",
         request_timeout: float = 120.0
     ):
-        # 2. LLMs using updated Ollama init
+        # Initialize LLMs
         self.primary_llm = Ollama(model=primary_model, request_timeout=request_timeout)
         self.validation_llm = Ollama(model=validation_model, request_timeout=request_timeout)
 
-        # 3. Register tools with LlamaIndex Agent using llm param
-        self.agent = Agent.from_tools(
-            tools=[
-                PearsonTool(), ZTestTool(), ANOVATool(), ContributionTool(),
-                TTestTool(), ChiSquareTool(), MannWhitneyUTool(), LinearRegressionTool()
-            ],
-            llm=self.validation_llm,
-            verbose=True
+        # Setup validation agent with tools
+        tools = [
+            PearsonTool(), ZTestTool(), ANOVATool(), ContributionTool(),
+            TTestTool(), ChiSquareTool(), MannWhitneyUTool(), LinearRegressionTool()
+        ]
+        self.validation_agent = ReActAgent(
+            tools=tools,
+            llm=self.validation_llm
         )
 
-        # 4. Prompt templates
+        # Define prompt templates
         self.prompts = {
-            "input_analysis": (
+            "analysis": (
                 """
-You are an expert data analyst. Given these reports:\n{reports}\nand this data summary:\n{data_stats}\nThink step by step and provide a concise input analysis.
+You are a data analyst. Given these reports:\n{reports}\nand this data summary:\n{data}\nThink step by step and provide a concise analysis.
 """
             ),
             "frameworks": (
                 """
-As a research framework advisor, review:\n{reports}\nand this analysis:\n{input_analysis}\nThink step by step, then list appropriate analytical frameworks separated by semicolons.
+As a framework advisor, review these reports and analysis.\n{reports}\nAnalysis:\n{analysis}\nThink step by step and list appropriate frameworks separated by semicolons.
 """
             ),
             "hypotheses": (
                 """
-You are a hypothesis generator. Based on the analysis:\n{input_analysis}\nThink step by step and generate multiple hypotheses separated by semicolons.
+You are a hypothesis generator. Based on analysis:\n{analysis}\nThink step by step and generate hypotheses separated by semicolons.
 """
             ),
             "insights": (
@@ -151,67 +154,69 @@ Given these validation results:\n{validations}\nThink step by step and provide g
             ),
             "recommendations": (
                 """
-Based on insights:\n{insights}\nand this schema:\n{schema}\nThink step by step and generate actionable recommendations. Prefix database-specific actions with 'Database:'. Separate items with semicolons.
+Based on insights:\n{insights}\nand schema:\n{schema}\nThink step by step and generate actionable recommendations; prefix database actions with 'Database:'.
 """
-            ),
+            )
         }
 
     def run(self, reports: List[str], data: Dict[str, Any], schema: str) -> Dict[str, Any]:
-        reports_str = "\n\n".join(reports)
+        # 1. Analysis
+        rpt = "\n\n".join(reports)
         data_str = str(data)
-        # 1. Input analysis
-        analysis = self.primary_llm.complete(
-            self.prompts["input_analysis"].format(reports=reports_str, data_stats=data_str)
-        )
+        analysis = self.primary_llm.complete(self.prompts["analysis"].format(reports=rpt, data=data_str))
+
         # 2. Framework selection
         frameworks = self.primary_llm.complete(
-            self.prompts["frameworks"].format(reports=reports_str, input_analysis=analysis)
+            self.prompts["frameworks"].format(reports=rpt, analysis=analysis)
         )
+
         # 3. Hypotheses
-        hyps_text = self.primary_llm.complete(
-            self.prompts["hypotheses"].format(input_analysis=analysis)
+        hyps = self.primary_llm.complete(
+            self.prompts["hypotheses"].format(analysis=analysis)
         )
-        hypotheses = [h.strip() for h in hyps_text.split(';') if h.strip()]
-        # 4. Validate via agent and tools
+        hypotheses = [h.strip() for h in hyps.split(';') if h.strip()]
+
+        # 4. Validation via ReActAgent
+        ctx = Context(self.validation_agent)
         validations = []
         for hyp in hypotheses:
-            result = self.agent.invoke(
-                f"Validate hypothesis: {hyp}\nUsing data: {data_str}"
-            )
-            validations.append(result)
-        # 5. Insights generation
-        insights_text = self.validation_llm.complete(
+            out = self.validation_agent.run(f"Validate hypothesis: {hyp} using data: {data_str}", ctx=ctx)
+            validations.append(str(out))
+
+        # 5. Insights
+        insights = self.validation_llm.complete(
             self.prompts["insights"].format(validations="\n".join(validations))
         )
-        insights = [i.strip() for i in insights_text.split(';') if i.strip()]
+        insights_list = [i.strip() for i in insights.split(';') if i.strip()]
+
         # 6. Recommendations
-        recs_text = self.primary_llm.complete(
-            self.prompts["recommendations"].format(insights="; ".join(insights), schema=schema)
+        recs = self.primary_llm.complete(
+            self.prompts["recommendations"].format(insights=insights, schema=schema)
         )
-        recommendations = [r.strip() for r in recs_text.split(';') if r.strip()]
+        recommendations = [r.strip() for r in recs.split(';') if r.strip()]
 
         return {
             "frameworks": frameworks,
             "root_causes": validations,
-            "insights": insights,
+            "insights": insights_list,
             "recommendations": recommendations
         }
 
     def format_report(self, result: Dict[str, Any], schema: str) -> str:
-        report = "# Root Cause Analysis Report\n\n"
-        report += "## Frameworks Proposed\n"
+        report = "# Causal Analysis Report\n\n"
+        report += "## Frameworks\n"
         for fw in result.get("frameworks", "").split(';'):
             report += f"- {fw.strip()}\n"
-        report += "\n## Root Cause Analysis\n"
-        for i, cause in enumerate(result.get("root_causes", []), 1):
-            report += f"{i}. {cause}\n"
-        report += "\n## General Insights\n"
+        report += "\n## Root Causes\n"
+        for i, rc in enumerate(result.get("root_causes", []), 1):
+            report += f"{i}. {rc}\n"
+        report += "\n## Insights\n"
         for ins in result.get("insights", []):
             report += f"- {ins}\n"
         report += "\n## Recommendations\n"
-        for r in result.get("recommendations", []):
-            report += f"- {r}\n"
-        report += f"\n## Database Schema Reference\n{schema}\n"
+        for rec in result.get("recommendations", []):
+            report += f"- {rec}\n"
+        report += f"\n## Schema\n{schema}\n"
         return report
 
 # Example usage
@@ -226,16 +231,16 @@ if __name__ == "__main__":
         "revenue": {"week22": 450000, "week23": 382500, "week24": 441000},
         "kpis": {"acquisitions": [1200, 720, 1100], "conversion_rate": [3.2, 2.8, 3.1]}
     }
-    sample_schema = """
-    Database Schema:
-    1. marketing (campaign_id, spend, impressions, week)
-    2. sales (transaction_id, amount, timestamp, region)
-    3. inventory (sku_id, stock_level, week)
-    4. errors (error_id, type, timestamp)
-    """
+    sample_schema = (
+        "Database Schema:\n"
+        "1. marketing(campaign_id,spend,impressions,week)\n"
+        "2. sales(transaction_id,amount,timestamp,region)\n"
+        "3. inventory(sku_id,stock_level,week)\n"
+        "4. errors(error_id,type,timestamp)"
+    )
     result = agent.run(sample_reports, sample_data, sample_schema)
     print(agent.format_report(result, sample_schema))
 
-# Dependencies:
+# Requirements:
 # pip install llama-index-llms-ollama scipy numpy
-# Ensure Ollama service is running locally (`ollama serve`)
+# Ensure Ollama is running: `ollama serve`
