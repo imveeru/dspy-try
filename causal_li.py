@@ -1,114 +1,64 @@
 # File: causal_agent_llamaindex.py
 from typing import List, Dict, Any
-from scipy import stats
 import numpy as np
+from scipy import stats
 
 # LlamaIndex imports
-from llama_index.llms.ollama import Ollama  # Ollama LLM client
-from llama_index.core.tools import BaseTool, ToolMetadata  # Custom tool base classes
-from llama_index.core.agent.workflow import ReActAgent  # ReAct agent implementation
-from llama_index.core.workflow import Context  # Agent execution context
+from llama_index.tools import FunctionTool  # Custom tool wrapper citeturn0view0
+from llama_index.llms.ollama import Ollama  # Ollama LLM client citeturn0view0
+from llama_index.core.agent.workflow import ReActAgent  # ReAct agent implementation citeturn0view0
 
-# 1. Define custom statistical tools
-class PearsonTool(BaseTool):
-    def __init__(self):
-        metadata = ToolMetadata(
-            name="pearson",
-            description="Compute Pearson correlation coefficient between two numeric lists."
-        )
-        super().__init__(metadata=metadata)
-    def _run(self, x: List[float], y: List[float]) -> float:
-        return stats.pearsonr(x, y)[0]
-    async def _arun(self, *args, **kwargs):
-        raise NotImplementedError
+# 1. Define statistical functions and wrap as FunctionTool
 
-class ZTestTool(BaseTool):
-    def __init__(self):
-        metadata = ToolMetadata(
-            name="z_test",
-            description="Compute z-test statistic between sample and population."
-        )
-        super().__init__(metadata=metadata)
-    def _run(self, sample: List[float], population: List[float]) -> float:
-        return (np.mean(sample) - np.mean(population)) / (np.std(population) / np.sqrt(len(sample)))
-    async def _arun(self, *args, **kwargs):
-        raise NotImplementedError
+def pearson(x: List[float], y: List[float]) -> float:
+    """Compute Pearson correlation coefficient between two numeric lists."""
+    return stats.pearsonr(x, y)[0]
+pearson_tool = FunctionTool.from_defaults(fn=pearson)
 
-class ANOVATool(BaseTool):
-    def __init__(self):
-        metadata = ToolMetadata(
-            name="anova",
-            description="Perform one-way ANOVA, returning the F-statistic."
-        )
-        super().__init__(metadata=metadata)
-    def _run(self, groups: List[List[float]]) -> float:
-        return stats.f_oneway(*groups)[0]
-    async def _arun(self, *args, **kwargs):
-        raise NotImplementedError
+def z_test(sample: List[float], population: List[float]) -> float:
+    """Compute z-test statistic between a sample list and a population list."""
+    return (np.mean(sample) - np.mean(population)) / (np.std(population) / np.sqrt(len(sample)))
+z_test_tool = FunctionTool.from_defaults(fn=z_test)
 
-class ContributionTool(BaseTool):
-    def __init__(self):
-        metadata = ToolMetadata(
-            name="contribution",
-            description="Compute covariance(x,y)/variance(y) contribution metric."
-        )
-        super().__init__(metadata=metadata)
-    def _run(self, x: List[float], y: List[float]) -> float:
-        cov = np.cov(x, y)[0,1]
-        return cov / np.var(y)
-    async def _arun(self, *args, **kwargs):
-        raise NotImplementedError
+def anova(groups: List[List[float]]) -> float:
+    """Perform one-way ANOVA, returning the F-statistic."""
+    return stats.f_oneway(*groups)[0]
+anova_tool = FunctionTool.from_defaults(fn=anova)
 
-class TTestTool(BaseTool):
-    def __init__(self):
-        metadata = ToolMetadata(
-            name="t_test",
-            description="Compute two-sample t-test statistic (unequal variance)."
-        )
-        super().__init__(metadata=metadata)
-    def _run(self, a: List[float], b: List[float]) -> float:
-        return stats.ttest_ind(a, b, equal_var=False).statistic
-    async def _arun(self, *args, **kwargs):
-        raise NotImplementedError
+def contribution(x: List[float], y: List[float]) -> float:
+    """Compute covariance(x,y)/variance(y) contribution metric."""
+    cov = np.cov(x, y)[0,1]
+    return cov / np.var(y)
+contribution_tool = FunctionTool.from_defaults(fn=contribution)
 
-class ChiSquareTool(BaseTool):
-    def __init__(self):
-        metadata = ToolMetadata(
-            name="chi_square",
-            description="Compute chi-square test statistic for observed vs expected counts."
-        )
-        super().__init__(metadata=metadata)
-    def _run(self, observed: List[float], expected: List[float]) -> float:
-        return float(stats.chisquare(observed, expected).statistic)
-    async def _arun(self, *args, **kwargs):
-        raise NotImplementedError
+def t_test(a: List[float], b: List[float]) -> float:
+    """Compute two-sample t-test statistic (unequal variance)."""
+    return stats.ttest_ind(a, b, equal_var=False).statistic
+t_test_tool = FunctionTool.from_defaults(fn=t_test)
 
-class MannWhitneyUTool(BaseTool):
-    def __init__(self):
-        metadata = ToolMetadata(
-            name="mannwhitneyu",
-            description="Compute Mann-Whitney U test statistic (two-sided)."
-        )
-        super().__init__(metadata=metadata)
-    def _run(self, a: List[float], b: List[float]) -> float:
-        return float(stats.mannwhitneyu(a, b, alternative='two-sided').statistic)
-    async def _arun(self, *args, **kwargs):
-        raise NotImplementedError
+def chi_square(observed: List[float], expected: List[float]) -> float:
+    """Compute chi-square test statistic for observed vs expected counts."""
+    return float(stats.chisquare(observed, expected).statistic)
+chi_square_tool = FunctionTool.from_defaults(fn=chi_square)
 
-class LinearRegressionTool(BaseTool):
-    def __init__(self):
-        metadata = ToolMetadata(
-            name="linear_regression",
-            description="Compute linear regression slope and intercept."
-        )
-        super().__init__(metadata=metadata)
-    def _run(self, x: List[float], y: List[float]) -> Dict[str, float]:
-        slope, intercept, _, _, _ = stats.linregress(x, y)
-        return {"slope": slope, "intercept": intercept}
-    async def _arun(self, *args, **kwargs):
-        raise NotImplementedError
+def mannwhitneyu(a: List[float], b: List[float]) -> float:
+    """Compute Mann-Whitney U test statistic (two-sided)."""
+    return float(stats.mannwhitneyu(a, b, alternative='two-sided').statistic)
+mwu_tool = FunctionTool.from_defaults(fn=mannwhitneyu)
 
-# 2. Agent class
+def linear_regression(x: List[float], y: List[float]) -> Dict[str, float]:
+    """Compute linear regression slope and intercept."""
+    slope, intercept, _, _, _ = stats.linregress(x, y)
+    return {"slope": slope, "intercept": intercept}
+linreg_tool = FunctionTool.from_defaults(fn=linear_regression)
+
+# Aggregate tools
+tools = [
+    pearson_tool, z_test_tool, anova_tool, contribution_tool,
+    t_test_tool, chi_square_tool, mwu_tool, linreg_tool
+]
+
+# 2. Define the causal analysis agent class
 class CausalAnalysisAgent:
     def __init__(
         self,
@@ -120,17 +70,10 @@ class CausalAnalysisAgent:
         self.primary_llm = Ollama(model=primary_model, request_timeout=request_timeout)
         self.validation_llm = Ollama(model=validation_model, request_timeout=request_timeout)
 
-        # Setup validation agent with tools
-        tools = [
-            PearsonTool(), ZTestTool(), ANOVATool(), ContributionTool(),
-            TTestTool(), ChiSquareTool(), MannWhitneyUTool(), LinearRegressionTool()
-        ]
-        self.validation_agent = ReActAgent(
-            tools=tools,
-            llm=self.validation_llm
-        )
+        # Setup ReAct agent for hypothesis validation
+        self.validation_agent = ReActAgent(tools=tools, llm=self.validation_llm)
 
-        # Define prompt templates
+        # Prompt templates
         self.prompts = {
             "analysis": (
                 """
@@ -139,7 +82,7 @@ You are a data analyst. Given these reports:\n{reports}\nand this data summary:\
             ),
             "frameworks": (
                 """
-As a framework advisor, review these reports and analysis.\n{reports}\nAnalysis:\n{analysis}\nThink step by step and list appropriate frameworks separated by semicolons.
+As a framework advisor, review these reports and analysis:\n{reports}\nAnalysis:\n{analysis}\nThink step by step and list appropriate frameworks separated by semicolons.
 """
             ),
             "hypotheses": (
@@ -177,11 +120,10 @@ Based on insights:\n{insights}\nand schema:\n{schema}\nThink step by step and ge
         hypotheses = [h.strip() for h in hyps.split(';') if h.strip()]
 
         # 4. Validation via ReActAgent
-        ctx = Context(self.validation_agent)
         validations = []
         for hyp in hypotheses:
-            out = self.validation_agent.run(f"Validate hypothesis: {hyp} using data: {data_str}", ctx=ctx)
-            validations.append(str(out))
+            result = self.validation_agent.run(f"Validate hypothesis: {hyp} using data: {data_str}")
+            validations.append(str(result))
 
         # 5. Insights
         insights = self.validation_llm.complete(
